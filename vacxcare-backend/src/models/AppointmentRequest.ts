@@ -9,7 +9,7 @@ export interface IAppointmentRequest extends Document {
   parentPhone: string; // Téléphone du parent (pour notification)
   
   // Centre de santé ciblé
-  healthCenter: string; // Nom du centre choisi
+  healthCenter: mongoose.Types.ObjectId; // Référence vers HealthCenter
   region: string; // Région du centre
   district?: string; // District du centre (optionnel)
   
@@ -51,7 +51,11 @@ const AppointmentRequestSchema = new Schema<IAppointmentRequest>(
     },
     
     // Centre ciblé
-    healthCenter: { type: String, required: true, trim: true },
+    healthCenter: { 
+      type: Schema.Types.ObjectId, 
+      ref: "HealthCenter", 
+      required: true 
+    },
     region: { type: String, required: true, trim: true },
     district: { type: String, trim: true },
     

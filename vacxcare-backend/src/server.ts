@@ -64,6 +64,11 @@ import vaccinationDaysRoutes from "./routes/vaccinationDays";
 import { startStockAlertsCron } from "./cron/stockAlertsCron";
 
 /* -------------------------------------------------------------------------- */
+/* ⚙️ IMPORT DU CRON AUTOMATIQUE RAPPELS VACCINATION                        */
+/* -------------------------------------------------------------------------- */
+import { startVaccinationRemindersCron } from "./cron/vaccinationRemindersCron";
+
+/* -------------------------------------------------------------------------- */
 /* ⚙️ IMPORTS UTILITAIRES SUPPLÉMENTAIRES                                    */
 /* -------------------------------------------------------------------------- */
 
@@ -280,6 +285,11 @@ setTimeout(() => {
 startStockAlertsCron();
 
 /* -------------------------------------------------------------------------- */
+/* ⏰ CRON RAPPELS VACCINATION                                               */
+/* -------------------------------------------------------------------------- */
+startVaccinationRemindersCron();
+
+/* -------------------------------------------------------------------------- */
 /* 🚀 LANCEMENT SERVEUR                                                     */
 /* -------------------------------------------------------------------------- */
 const PORT = process.env.PORT || 5000; // Port 5000 par défaut
@@ -289,6 +299,7 @@ server.listen(PORT, () => {
   console.log(`🏥 Health check: http://localhost:${PORT}/health`);
   console.log(`📊 Métriques: http://localhost:${PORT}/metrics`);
   console.log("⏰ CRON des alertes de stock activé !");
+  console.log("⏰ CRON des rappels de vaccination activé !");
   
   // Initialiser le monitoring
   initializeMonitoring();

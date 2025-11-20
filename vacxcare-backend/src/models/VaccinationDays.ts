@@ -4,7 +4,7 @@ export interface IVaccinationDays extends Document {
   userId: mongoose.Types.ObjectId;
   userName: string;
   userRole: 'district' | 'agent';
-  healthCenter: string;
+  healthCenter: mongoose.Types.ObjectId; // Référence vers HealthCenter
   region?: string;
   vaccinationDays: {
     monday: boolean;
@@ -50,7 +50,8 @@ const VaccinationDaysSchema: Schema = new Schema({
     required: true
   },
   healthCenter: {
-    type: String,
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'HealthCenter',
     required: true
   },
   region: {

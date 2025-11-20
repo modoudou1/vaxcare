@@ -10,7 +10,7 @@ export interface IStock extends Document {
   // Hiérarchie de possession
   level: "national" | "regional" | "district" | "agent"; // Niveau actuel de possession
   region?: string; // Si level >= regional
-  healthCenter?: string; // Si level >= district (pour district, c'est le nom du district)
+  healthCenter?: Types.ObjectId; // Référence vers HealthCenter si level >= district
   assignedTo?: Types.ObjectId; // Pour stocks individuels (agent → membre d'équipe)
   
   createdBy: Types.ObjectId; // Référence à l’utilisateur (agent)
@@ -61,8 +61,9 @@ const stockSchema = new Schema<IStock>(
       trim: true,
     },
     healthCenter: {
-      type: String,
-      trim: true,
+      type: Schema.Types.ObjectId,
+      ref: "HealthCenter",
+      required: false,
     },
     assignedTo: {
       type: Schema.Types.ObjectId,

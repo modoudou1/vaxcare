@@ -1,4 +1,5 @@
 import { Request, Response } from "express";
+import mongoose from "mongoose";
 import Stock from "../models/Stock";
 import StockTransfer from "../models/StockTransfer";
 import User from "../models/User";
@@ -7,6 +8,51 @@ import Notification from "../models/Notification";
 import { sendSocketNotification } from "../utils/socketManager";
 import { io } from "../server";
 
+const toObjectId = (value: unknown): mongoose.Types.ObjectId | undefined => {
+  if (!value) return undefined;
+  if (value instanceof mongoose.Types.ObjectId) return value;
+  if (typeof value === "string" && mongoose.Types.ObjectId.isValid(value)) {
+    return new mongoose.Types.ObjectId(value);
+  }
+  return undefined;
+};
+
+const buildHealthCenterFilter = (value: unknown) => {
+  const filters: (mongoose.Types.ObjectId | string)[] = [];
+  const asObjectId = toObjectId(value);
+  if (asObjectId) filters.push(asObjectId);
+  if (typeof value === "string" && value.trim()) filters.push(value.trim());
+  if (!filters.length) return undefined;
+  return filters.length === 1 ? filters[0] : { $in: filters };
+};
+
+const normalizeHealthCenter = (value: unknown): string | undefined => {
+  const asObjectId = toObjectId(value);
+  if (asObjectId) return asObjectId.toString();
+  if (typeof value === "string") return value;
+  return undefined;
+};
+
+const sameHealthCenter = (a: unknown, b: unknown): boolean => {
+  const normA = normalizeHealthCenter(a);
+  const normB = normalizeHealthCenter(b);
+  return !!normA && !!normB && normA === normB;
+};
+
+const resolveHealthCenterId = async (
+  value: unknown
+): Promise<mongoose.Types.ObjectId | undefined> => {
+  const asObjectId = toObjectId(value);
+  if (asObjectId) return asObjectId;
+  if (typeof value === "string" && value.trim()) {
+    const center = await HealthCenter.findOne({ name: value.trim() })
+      .select("_id")
+      .lean();
+    return center?._id;
+  }
+  return undefined;
+};
+
 /* -------------------------------------------------------------------------- */
 /* 📤 Transférer un stock (DIRECT - sans validation)                        */
 /* -------------------------------------------------------------------------- */
@@ -14,6 +60,7 @@ export const initiateTransfer = async (req: Request, res: Response) => {
   try {
     const { stockId, quantity, toRegion, toHealthCenter } = req.body;
     const user = (req as any).user;
+    const toHealthCenterId = await resolveHealthCenterId(toHealthCenter);
 
     console.log("\n🚀 ========= DÉBUT TRANSFERT =========");
     console.log("👤 User:", user.email, "Role:", user.role, "Region:", user.region || "N/A");
@@ -41,7 +88,7 @@ export const initiateTransfer = async (req: Request, res: Response) => {
     // Déterminer le niveau de destination
     let toLevel: "national" | "regional" | "district" | "agent" = "agent";
     let targetUser = null;
-    let destinationHealthCenter = toHealthCenter; // Variable modifiable
+    let destinationHealthCenter = toHealthCenterId; // Variable modifiable
 
     if (user.role === "national") {
       // National → Regional
@@ -57,7 +104,7 @@ export const initiateTransfer = async (req: Request, res: Response) => {
       }
     } else if (user.role === "regional") {
       // Regional → District
-      if (!toHealthCenter) {
+      if (!toHealthCenterId) {
         return res.status(400).json({ error: "District de destination requis" });
       }
       toLevel = "district";
@@ -66,14 +113,14 @@ export const initiateTransfer = async (req: Request, res: Response) => {
       const districtUser = await User.findOne({ 
         role: "district", 
         region: user.region,
-        healthCenter: toHealthCenter 
+        ...(toHealthCenterId ? { healthCenter: buildHealthCenterFilter(toHealthCenterId) } : {}),
       });
       if (districtUser) {
         targetUser = districtUser._id;
       }
     } else if (user.role === "district") {
       // District → Agent (structure de santé)
-      if (!toHealthCenter) {
+      if (!toHealthCenterId) {
         return res.status(400).json({ error: "Structure de santé de destination requise" });
       }
       toLevel = "agent";
@@ -82,7 +129,7 @@ export const initiateTransfer = async (req: Request, res: Response) => {
       const agentUser = await User.findOne({ 
         role: "agent", 
         region: user.region,
-        healthCenter: toHealthCenter 
+        ...(toHealthCenterId ? { healthCenter: buildHealthCenterFilter(toHealthCenterId) } : {}),
       });
       if (agentUser) {
         targetUser = agentUser._id;
@@ -107,7 +154,11 @@ export const initiateTransfer = async (req: Request, res: Response) => {
       }
       
       targetUser = teamMember._id;
-      destinationHealthCenter = user.healthCenter; // Même centre
+      const agentCenterId = await resolveHealthCenterId(user.healthCenter);
+      if (!agentCenterId) {
+        return res.status(400).json({ error: "Votre centre de santé est introuvable" });
+      }
+      destinationHealthCenter = agentCenterId; // Même centre (ObjectId)
       console.log(`👥 Agent → Membre d'équipe: ${teamMember.firstName} ${teamMember.lastName} (ID: ${targetUser})`);
     } else {
       return res.status(403).json({ error: "Vous n'êtes pas autorisé à effectuer des transferts" });
@@ -115,7 +166,7 @@ export const initiateTransfer = async (req: Request, res: Response) => {
 
     console.log("✅ Niveau destination déterminé:", toLevel);
     console.log("✅ Région destination finale:", toRegion || user.region || "UNDEFINED");
-    console.log("✅ HealthCenter destination:", destinationHealthCenter || "AUCUN");
+    console.log("✅ HealthCenter destination:", destinationHealthCenter?.toString() || "AUCUN");
 
     // 🔥 TRANSFERT DIRECT : Décrémenter le stock source
     sourceStock.quantity -= quantity;
@@ -204,7 +255,7 @@ export const initiateTransfer = async (req: Request, res: Response) => {
     });
 
     // Envoyer notification au destinataire
-    const destination = destinationHealthCenter || toRegion;
+    const destination = destinationHealthCenter?.toString() || toRegion;
     const notif = await Notification.create({
       title: `📦 Transfert reçu`,
       message: `Vous avez reçu ${quantity} doses de ${sourceStock.vaccine} (lot ${sourceStock.batchNumber}).`,
@@ -247,12 +298,11 @@ export const acceptTransfer = async (req: Request, res: Response) => {
 
     // Vérifier que l'utilisateur est le destinataire
     if (transfer.toUser && transfer.toUser.toString() !== user.id) {
-      // Vérifier aussi si l'utilisateur a le bon niveau et la bonne région/centre
-      const isAuthorized = 
+      const isAuthorized =
         (transfer.toLevel === "regional" && user.role === "regional" && user.region === transfer.toRegion) ||
-        (transfer.toLevel === "district" && user.role === "district" && user.healthCenter === transfer.toHealthCenter) ||
-        (transfer.toLevel === "agent" && user.role === "agent" && user.healthCenter === transfer.toHealthCenter);
-      
+        (transfer.toLevel === "district" && user.role === "district" && sameHealthCenter(user.healthCenter, transfer.toHealthCenter)) ||
+        (transfer.toLevel === "agent" && user.role === "agent" && sameHealthCenter(user.healthCenter, transfer.toHealthCenter));
+
       if (!isAuthorized) {
         return res.status(403).json({ error: "Vous n'êtes pas autorisé à accepter ce transfert" });
       }
@@ -270,7 +320,7 @@ export const acceptTransfer = async (req: Request, res: Response) => {
     }
     
     if (transfer.toHealthCenter) {
-      destinationQuery.healthCenter = transfer.toHealthCenter;
+      destinationQuery.healthCenter = buildHealthCenterFilter(transfer.toHealthCenter);
     }
 
     let destinationStock = await Stock.findOne(destinationQuery);
@@ -345,11 +395,11 @@ export const rejectTransfer = async (req: Request, res: Response) => {
 
     // Vérifier que l'utilisateur est le destinataire
     if (transfer.toUser && transfer.toUser.toString() !== user.id) {
-      const isAuthorized = 
+      const isAuthorized =
         (transfer.toLevel === "regional" && user.role === "regional" && user.region === transfer.toRegion) ||
-        (transfer.toLevel === "district" && user.role === "district" && user.healthCenter === transfer.toHealthCenter) ||
-        (transfer.toLevel === "agent" && user.role === "agent" && user.healthCenter === transfer.toHealthCenter);
-      
+        (transfer.toLevel === "district" && user.role === "district" && sameHealthCenter(user.healthCenter, transfer.toHealthCenter)) ||
+        (transfer.toLevel === "agent" && user.role === "agent" && sameHealthCenter(user.healthCenter, transfer.toHealthCenter));
+
       if (!isAuthorized) {
         return res.status(403).json({ error: "Vous n'êtes pas autorisé à rejeter ce transfert" });
       }
@@ -402,7 +452,10 @@ export const getIncomingTransfers = async (req: Request, res: Response) => {
     if (!query.toUser) {
       query.toLevel = user.role;
       if (user.region) query.toRegion = user.region;
-      if (user.healthCenter) query.toHealthCenter = user.healthCenter;
+      if (user.healthCenter) {
+        const filter = buildHealthCenterFilter(user.healthCenter);
+        if (filter) query.toHealthCenter = filter;
+      }
     }
 
     const transfers = await StockTransfer.find(query)
@@ -478,6 +531,17 @@ export const getTransferDestinations = async (req: Request, res: Response) => {
   try {
     const user = (req as any).user;
     let destinations: any[] = [];
+    const userHealthCenterFilter = buildHealthCenterFilter(user.healthCenter);
+
+    const resolveUserCenterName = async () => {
+      if (typeof user.healthCenter === "string" && !mongoose.Types.ObjectId.isValid(user.healthCenter)) {
+        return user.healthCenter;
+      }
+      const asObjectId = toObjectId(user.healthCenter);
+      if (!asObjectId) return undefined;
+      const center = await HealthCenter.findById(asObjectId).select("name").lean();
+      return center?.name;
+    };
 
     console.log('\n🎯 === getTransferDestinations ===');
     console.log('User ID:', user.id);
@@ -509,10 +573,15 @@ export const getTransferDestinations = async (req: Request, res: Response) => {
       }));
     } else if (user.role === "district") {
       // District → Acteurs de santé sous sa supervision
+      const districtName = await resolveUserCenterName();
       const actors = await HealthCenter.find({
         $or: [
-          { districtName: user.healthCenter },
-          { district: user.healthCenter },
+          ...(districtName
+            ? [
+                { districtName },
+                { district: districtName },
+              ]
+            : []),
         ],
         type: { $ne: "district" }, // Exclure les districts
       }).select("name type").lean();
@@ -527,11 +596,13 @@ export const getTransferDestinations = async (req: Request, res: Response) => {
       console.log(`🏛️ District ${user.healthCenter}: ${destinations.length} acteurs trouvés`);
     } else if (user.role === "agent") {
       // Agent → Membres de son équipe (autres agents du même centre)
-      const teamMembers = await User.find({
-        role: "agent",
-        healthCenter: user.healthCenter,
-        _id: { $ne: user.id }, // Exclure l'utilisateur actuel
-      }).select("firstName lastName email").lean();
+      const teamFilter: any = { role: "agent", _id: { $ne: user.id } };
+      if (userHealthCenterFilter) {
+        teamFilter.healthCenter = userHealthCenterFilter;
+      }
+      const teamMembers = await User.find(teamFilter)
+        .select("firstName lastName email")
+        .lean();
       
       destinations = teamMembers.map((member: any) => ({
         type: "teamMember",
