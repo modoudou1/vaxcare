@@ -1,0 +1,14 @@
+node_modules
+.env
+.env.*
+dist
+build
+.next
+.turbo
+.vscode
+.idea
+*.log
+# Flutter / Dart
+.dart_tool
+.build/
+build/
