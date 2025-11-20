@@ -15,7 +15,7 @@ export interface IVaccination extends Document {
   doneDate?: Date;
   doseNumber?: number;
   region?: string;
-  healthCenter?: string;
+  healthCenter?: mongoose.Types.ObjectId; // Référence vers HealthCenter
   district?: string;
   givenBy?: mongoose.Types.ObjectId;
   status: "scheduled" | "done" | "cancelled" | "planned" | "missed";
@@ -47,7 +47,11 @@ const VaccinationSchema = new Schema<IVaccination>(
     doneDate: { type: Date, default: null },
     doseNumber: { type: Number },
     region: { type: String, trim: true },
-    healthCenter: { type: String, trim: true },
+    healthCenter: { 
+      type: mongoose.Schema.Types.ObjectId, 
+      ref: "HealthCenter",
+      required: false 
+    },
     district: { type: String, trim: true },
     givenBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     status: {

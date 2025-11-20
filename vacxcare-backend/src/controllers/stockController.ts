@@ -1,8 +1,26 @@
 import { Request, Response } from "express";
+import mongoose from "mongoose";
 import Stock from "../models/Stock";
 import Notification from "../models/Notification";
 import { io } from "../server";
 import { sendSocketNotification } from "../utils/socketManager";
+
+const toObjectId = (value: unknown): mongoose.Types.ObjectId | undefined => {
+  if (!value) return undefined;
+  if (value instanceof mongoose.Types.ObjectId) return value;
+  if (typeof value === "string" && mongoose.Types.ObjectId.isValid(value)) {
+    return new mongoose.Types.ObjectId(value);
+  }
+  return undefined;
+};
+
+const buildHealthCenterFilter = (value: unknown) => {
+  const filters: (mongoose.Types.ObjectId | string)[] = [];
+  const asObjectId = toObjectId(value);
+  if (asObjectId) filters.push(asObjectId);
+  if (typeof value === "string") filters.push(value);
+  return filters.length ? { $in: filters } : undefined;
+};
 
 /* -------------------------------------------------------------------------- */
 /* 🔔 Fonction utilitaire – envoi automatique de notifications                */
@@ -110,11 +128,17 @@ export const createStock = async (req: Request, res: Response) => {
     const normalizedVaccine = vaccine.trim().toUpperCase();
     const normalizedBatch = batchNumber.trim().toUpperCase();
 
-    const existing = await Stock.findOne({
+    const healthCenterFilter = buildHealthCenterFilter(user.healthCenter || healthCenter);
+    const existingQuery: any = {
       vaccine: normalizedVaccine,
       batchNumber: normalizedBatch,
-      healthCenter: user.healthCenter || healthCenter || undefined,
-    });
+    };
+
+    if (healthCenterFilter) {
+      existingQuery.healthCenter = healthCenterFilter;
+    }
+
+    const existing = await Stock.findOne(existingQuery);
 
     if (existing) {
       const prevQty = existing.quantity;
@@ -141,6 +165,8 @@ export const createStock = async (req: Request, res: Response) => {
     else if (user.role === "district") level = "district";
     else if (user.role === "agent") level = "agent";
 
+    const effectiveHealthCenter = toObjectId(user.healthCenter) || toObjectId(healthCenter);
+
     const stock = new Stock({
       vaccine: normalizedVaccine,
       batchNumber: normalizedBatch,
@@ -148,7 +174,7 @@ export const createStock = async (req: Request, res: Response) => {
       expirationDate,
       level,
       region: user.region || region,
-      healthCenter: user.healthCenter || healthCenter,
+      healthCenter: effectiveHealthCenter,
       createdBy: user.id,
     });
 
@@ -174,6 +200,7 @@ export const getStocks = async (req: Request, res: Response) => {
   try {
     const user = (req as any).user;
     const query: any = {};
+    const userHealthCenterFilter = buildHealthCenterFilter(user.healthCenter);
 
     // Filtrer selon le rôle et le niveau
     if (user.role === "national") {
@@ -191,8 +218,16 @@ export const getStocks = async (req: Request, res: Response) => {
     } else if (user.role === "district") {
       // District voit ses stocks de district
       query.$or = [
-        { level: "district", region: user.region, healthCenter: user.healthCenter },
-        { level: { $exists: false }, region: user.region, healthCenter: user.healthCenter }
+        {
+          level: "district",
+          region: user.region,
+          ...(userHealthCenterFilter ? { healthCenter: userHealthCenterFilter } : {}),
+        },
+        {
+          level: { $exists: false },
+          region: user.region,
+          ...(userHealthCenterFilter ? { healthCenter: userHealthCenterFilter } : {}),
+        },
       ];
     } else if (user.role === "agent") {
       // Distinguer facility_admin et facility_staff
@@ -200,13 +235,23 @@ export const getStocks = async (req: Request, res: Response) => {
         // 👨‍⚕️ facility_staff : voit uniquement ses stocks assignés
         query.$or = [
           { level: "agent", assignedTo: user.id },
-          { level: { $exists: false }, healthCenter: user.healthCenter, assignedTo: user.id }
+          {
+            level: { $exists: false },
+            ...(userHealthCenterFilter ? { healthCenter: userHealthCenterFilter } : {}),
+            assignedTo: user.id,
+          },
         ];
       } else {
         // 👨‍💼 facility_admin (ou agents sans agentLevel) : voit tous les stocks du centre
         query.$or = [
-          { level: "agent", healthCenter: user.healthCenter },
-          { level: { $exists: false }, healthCenter: user.healthCenter }
+          {
+            level: "agent",
+            ...(userHealthCenterFilter ? { healthCenter: userHealthCenterFilter } : {}),
+          },
+          {
+            level: { $exists: false },
+            ...(userHealthCenterFilter ? { healthCenter: userHealthCenterFilter } : {}),
+          },
         ];
       }
     }
@@ -303,13 +348,19 @@ export const updateStock = async (req: Request, res: Response) => {
 /* -------------------------------------------------------------------------- */
 /* ➖ Décrémenter après vaccination                                          */
 /* -------------------------------------------------------------------------- */
-export const decrementStock = async (vaccineName: string, healthCenter?: string) => {
+export const decrementStock = async (
+  vaccineName: string,
+  healthCenter?: mongoose.Types.ObjectId | string
+) => {
   try {
     const normalizedName = vaccineName.trim().toUpperCase();
-    const stock = await Stock.findOne({
-      vaccine: normalizedName,
-      ...(healthCenter && { healthCenter }),
-    }).sort({ expirationDate: 1 });
+    const healthCenterFilter = buildHealthCenterFilter(healthCenter);
+    const stockQuery: any = { vaccine: normalizedName };
+    if (healthCenterFilter) {
+      stockQuery.healthCenter = healthCenterFilter;
+    }
+
+    const stock = await Stock.findOne(stockQuery).sort({ expirationDate: 1 });
 
     if (stock && stock.quantity > 0) {
       const prev = stock.quantity;
@@ -392,13 +443,14 @@ export const transferStock = async (req: Request, res: Response) => {
   try {
     const { stockId, quantity, targetRegion, targetHealthCenter } = req.body;
     const user = (req as any).user;
+    const targetHealthCenterId = toObjectId(targetHealthCenter);
 
     // Validation
     if (!stockId || !quantity || quantity <= 0) {
       return res.status(400).json({ error: "Stock ID et quantité valide requis" });
     }
 
-    if (!targetRegion && !targetHealthCenter) {
+    if (!targetRegion && !targetHealthCenterId) {
       return res.status(400).json({ error: "Destination (région ou centre) requise" });
     }
 
@@ -431,10 +483,10 @@ export const transferStock = async (req: Request, res: Response) => {
       destinationQuery.healthCenter = { $exists: false };
     }
     
-    if (targetHealthCenter) {
+    if (targetHealthCenterId) {
       // Transfert vers centre : doit inclure la région source
       destinationQuery.region = sourceStock.region;
-      destinationQuery.healthCenter = targetHealthCenter;
+      destinationQuery.healthCenter = targetHealthCenterId;
     }
 
     let destinationStock = await Stock.findOne(destinationQuery);
@@ -454,16 +506,16 @@ export const transferStock = async (req: Request, res: Response) => {
       };
       
       // N'ajouter healthCenter que si c'est un transfert vers un centre
-      if (targetHealthCenter) {
-        newStockData.healthCenter = targetHealthCenter;
+      if (targetHealthCenterId) {
+        newStockData.healthCenter = targetHealthCenterId;
       }
       
       destinationStock = await Stock.create(newStockData);
     }
 
     // Envoyer notification ciblée
-    const targetRoles = targetHealthCenter ? ["agent"] : ["regional"];
-    const destination = targetHealthCenter || targetRegion;
+    const targetRoles = targetHealthCenterId ? ["agent"] : ["regional"];
+    const destination = targetHealthCenterId?.toString() || targetRegion;
     const title = `📦 Transfert reçu – ${sourceStock.vaccine}`;
     const message = `Vous avez reçu ${quantity} doses de ${sourceStock.vaccine} (lot ${sourceStock.batchNumber}).`;
 

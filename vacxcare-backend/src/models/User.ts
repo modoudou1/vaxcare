@@ -13,7 +13,7 @@ export interface IUser extends Document {
   password?: string;
   role: UserRole;
   region?: string;
-  healthCenter?: string;
+  healthCenter?: Types.ObjectId; // Référence vers HealthCenter
   agentLevel?: AgentLevel;
   firstName?: string;
   lastName?: string;
@@ -55,7 +55,11 @@ const userSchema = new Schema<IUser>(
       default: "user",
     },
     region: { type: String },
-    healthCenter: { type: String },
+    healthCenter: { 
+      type: Schema.Types.ObjectId, 
+      ref: "HealthCenter",
+      required: false 
+    },
     agentLevel: {
       type: String,
       enum: ["facility_admin", "facility_staff"],

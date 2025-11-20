@@ -6,7 +6,7 @@ import mongoose, { Document, Schema } from "mongoose";
 export interface IAppointment extends Document {
   child: mongoose.Types.ObjectId; // Enfant concerné
   vaccine: mongoose.Types.ObjectId; // Vaccin associé
-  healthCenter: string; // ✅ string pour cohérence avec Child & Stock
+  healthCenter: mongoose.Types.ObjectId; // Référence vers HealthCenter
   region?: string;
   district?: string;
   agent?: mongoose.Types.ObjectId; // Agent qui crée/valide
@@ -23,7 +23,11 @@ const AppointmentSchema = new Schema<IAppointment>(
   {
     child: { type: Schema.Types.ObjectId, ref: "Child", required: true },
     vaccine: { type: Schema.Types.ObjectId, ref: "Vaccine", required: true },
-    healthCenter: { type: String, required: true, trim: true }, // ✅ string ici
+    healthCenter: { 
+      type: Schema.Types.ObjectId, 
+      ref: "HealthCenter", 
+      required: true 
+    },
     region: { type: String, trim: true },
     district: { type: String, trim: true },
     agent: { type: Schema.Types.ObjectId, ref: "User" },

@@ -32,6 +32,7 @@ export const searchAvailableCenters = async (req: Request, res: Response) => {
       expirationDate: { $gt: new Date() }, // Non expiré
       ...(region && { region: region }), // Filtrer par région si fournie
     })
+      .populate("healthCenter", "name districtName type address region")
       .populate("createdBy", "name agentLevel healthCenter region")
       .sort({ quantity: -1 }); // Trier par quantité décroissante
 
@@ -45,22 +46,24 @@ export const searchAvailableCenters = async (req: Request, res: Response) => {
       });
     }
 
-    // 2. Grouper par centre de santé et récupérer les infos du centre
-    const centersMap = new Map();
+    // 2. Grouper par centre de santé (clé = ObjectId du HealthCenter)
+    const centersMap = new Map<string, any>();
 
-    for (const stock of availableStocks) {
-      const centerName = stock.healthCenter;
-      if (!centerName) continue;
+    for (const stock of availableStocks as any[]) {
+      const centerDoc = stock.healthCenter as any;
+      const centerId = centerDoc?._id?.toString() || (stock.healthCenter ? String(stock.healthCenter) : null);
+      if (!centerId) continue;
 
-      console.log(`🔍 Traitement stock - Centre: ${centerName}, Quantity: ${stock.quantity}, Lot: ${stock.batchNumber}`);
+      const centerName = centerDoc?.name || "Centre sans nom";
 
-      // Chercher les infos du centre de santé
-      const centerInfo = await HealthCenter.findOne({ name: centerName });
+      console.log(
+        `🔍 Traitement stock - Centre: ${centerName} (${centerId}), Quantity: ${stock.quantity}, Lot: ${stock.batchNumber}`
+      );
 
-      if (!centersMap.has(centerName)) {
+      if (!centersMap.has(centerId)) {
         // 3. Chercher les agents de ce centre pour avoir les jours de disponibilité
         const agents = await User.find({
-          healthCenter: centerName,
+          healthCenter: centerId,
           agentLevel: { $in: ["facility_admin", "facility_staff"] },
           isActive: true,
         }).select("name");
@@ -68,7 +71,7 @@ export const searchAvailableCenters = async (req: Request, res: Response) => {
         // 4. Récupérer les vrais jours de vaccination des agents
         console.log(`🔍 Recherche jours de vaccination pour centre: ${centerName}`);
         const vaccinationDays = await VaccinationDays.find({
-          healthCenter: centerName,
+          healthCenter: centerId,
           isActive: true,
         });
 
@@ -84,9 +87,9 @@ export const searchAvailableCenters = async (req: Request, res: Response) => {
           friday: "vendredi",
           saturday: "samedi",
           sunday: "dimanche"
-        };
+        } as const;
 
-        for (const planning of vaccinationDays) {
+        for (const planning of vaccinationDays as any[]) {
           Object.entries(planning.vaccinationDays).forEach(([dayKey, isAvailable]) => {
             if (isAvailable && dayMapping[dayKey as keyof typeof dayMapping]) {
               allAvailableDays.add(dayMapping[dayKey as keyof typeof dayMapping]);
@@ -102,24 +105,30 @@ export const searchAvailableCenters = async (req: Request, res: Response) => {
           );
         }
 
-        centersMap.set(centerName, {
+        centersMap.set(centerId, {
+          id: centerId,
           name: centerName,
-          region: stock.region,
-          district: stock.level === "district" ? centerName : centerInfo?.districtName,
-          type: centerInfo?.type || "health_center",
-          address: centerInfo?.address || "Adresse non disponible",
+          region: centerDoc?.region || stock.region,
+          district:
+            centerDoc?.type === "district"
+              ? centerDoc?.name
+              : centerDoc?.districtName,
+          type: centerDoc?.type || "health_center",
+          address: centerDoc?.address || "Adresse non disponible",
           hasStock: stock.quantity > 0, // ✅ Juste boolean au lieu de quantity exacte
           availableDays: Array.from(allAvailableDays),
           agents: agents.length,
-          batches: [{
-            batchNumber: stock.batchNumber,
-            hasStock: stock.quantity > 0, // ✅ Boolean ici aussi
-            expirationDate: stock.expirationDate,
-          }],
+          batches: [
+            {
+              batchNumber: stock.batchNumber,
+              hasStock: stock.quantity > 0, // ✅ Boolean ici aussi
+              expirationDate: stock.expirationDate,
+            },
+          ],
         });
       } else {
         // Ajouter ce batch aux batches existants
-        const center = centersMap.get(centerName);
+        const center = centersMap.get(centerId);
         center.hasStock = center.hasStock || stock.quantity > 0; // ✅ Garder boolean
         center.batches.push({
           batchNumber: stock.batchNumber,

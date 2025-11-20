@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import { AuthRequest } from "../middleware/auth";
+import { AuthUser, AuthenticatedRequest } from "../middleware/auth";
 import Child from "../models/Child";
 import VaccineSchedule from "../models/VaccineSchedule";
 import User from "../models/User";
@@ -48,7 +48,7 @@ function toMonths(age: number, unit: string): number {
 /* -------------------------------------------------------------------------- */
 /* 👶 CRÉER UN ENFANT + ENVOYER SMS                                           */
 /* -------------------------------------------------------------------------- */
-export const createChild = async (req: AuthRequest, res: Response) => {
+export const createChild = async (req: AuthenticatedRequest, res: Response) => {
   try {
     if (!req.user) return res.status(401).json({ message: "Non autorisé" });
 
@@ -136,7 +136,8 @@ export const createChild = async (req: AuthRequest, res: Response) => {
     // 🔹 Envoi du code d'accès par WhatsApp + SMS
     const smsParentName = parentInfo.parentName || legacyParentName || "Parent";
     const displayName = legacyName || `${firstName} ${lastName}`.trim();
-    const accessCode = child.parentAccessCode || child._id;
+    const accessCode =
+      child.parentAccessCode || (child as any)?._id?.toString?.() || String((child as any)?._id);
     
     if (parentInfo.parentPhone) {
       // Envoyer par WhatsApp en priorité, avec fallback SMS

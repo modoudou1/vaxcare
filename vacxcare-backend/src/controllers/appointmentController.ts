@@ -13,6 +13,61 @@ import { decrementStock } from "./stockController";
 function escapeRegex(s: string) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
+
+const toObjectId = (value: unknown): Types.ObjectId | undefined => {
+  if (!value) return undefined;
+  if (value instanceof Types.ObjectId) return value;
+  if (typeof value === "string" && Types.ObjectId.isValid(value)) {
+    return new Types.ObjectId(value);
+  }
+  return undefined;
+};
+
+const buildHealthCenterFilter = (value: unknown) => {
+  const candidates: (Types.ObjectId | string)[] = [];
+  const asObjectId = toObjectId(value);
+  if (asObjectId) candidates.push(asObjectId);
+  if (typeof value === "string" && value.trim()) candidates.push(value.trim());
+  if (!candidates.length) return undefined;
+  return candidates.length === 1 ? candidates[0] : { $in: candidates };
+};
+
+const resolveHealthCenter = async (
+  value: unknown,
+  region?: string
+): Promise<{ id: Types.ObjectId; doc: any } | undefined> => {
+  if (!value) return undefined;
+
+  let id = toObjectId(value);
+  let doc: any = null;
+
+  if (typeof value === "object" && value !== null && (value as any)._id) {
+    id = toObjectId((value as any)._id) || id;
+  }
+
+  if (id) {
+    doc = await HealthCenter.findById(id).lean();
+  }
+
+  if (!doc && typeof value === "string" && value.trim()) {
+    const query: any = { name: value.trim() };
+    if (region) query.region = region;
+    doc = await HealthCenter.findOne(query).lean();
+    if (doc) {
+      id = doc._id;
+    }
+  }
+
+  if (!doc && id) {
+    doc = await HealthCenter.findById(id).lean();
+  }
+
+  if (doc && id) {
+    return { id, doc };
+  }
+
+  return undefined;
+};
 // ➕ Créer un rendez-vous (agent uniquement) + notification parent
 export const createAppointment = async (req: Request, res: Response) => {
   try {
@@ -24,30 +79,12 @@ export const createAppointment = async (req: Request, res: Response) => {
       healthCenter = user.healthCenter;
     }
 
-    let centerName: string | null = null;
+    const resolvedCenter = await resolveHealthCenter(
+      healthCenter || user?.healthCenter,
+      user?.region
+    );
 
-    if (typeof healthCenter === "object" && healthCenter !== null) {
-      centerName =
-        (healthCenter as any).name ||
-        (await HealthCenter.findById((healthCenter as any)._id).then(
-          (hc) => hc?.name || null
-        ));
-    } else if (
-      typeof healthCenter === "string" &&
-      /^[0-9a-fA-F]{24}$/.test(healthCenter)
-    ) {
-      const found = await HealthCenter.findById(healthCenter).lean();
-      centerName = found?.name || null;
-    } else if (typeof healthCenter === "string") {
-      centerName = healthCenter.trim();
-    } else if (!centerName && user?.healthCenter) {
-      if (typeof user.healthCenter === "string")
-        centerName = user.healthCenter.trim();
-      else if (typeof user.healthCenter === "object")
-        centerName = (user.healthCenter as any).name?.trim() || null;
-    }
-
-    if (!centerName) {
+    if (!resolvedCenter?.id) {
       return res
         .status(400)
         .json({ error: "Impossible de déterminer le centre de santé." });
